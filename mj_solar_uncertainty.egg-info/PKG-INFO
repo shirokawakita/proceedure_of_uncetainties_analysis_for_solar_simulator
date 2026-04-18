@@ -1,0 +1,10 @@
+Metadata-Version: 2.4
+Name: mj-solar-uncertainty
+Version: 0.1.0
+Summary: 多接合太陽電池ソーラシミュレータの校正不確かさ評価 (Baur & Bett 2005 手法)
+Requires-Python: >=3.10
+Requires-Dist: numpy>=1.24
+Requires-Dist: pandas>=2.0
+Requires-Dist: matplotlib>=3.6
+Requires-Dist: tabulate>=0.9
+Requires-Dist: xlrd>=2.0.1
