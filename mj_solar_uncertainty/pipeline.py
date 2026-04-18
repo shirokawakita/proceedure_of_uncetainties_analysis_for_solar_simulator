@@ -110,8 +110,8 @@ def mc_perturb_breakdown_table(
     sources: List,
     sr_ref,
     ref_spec,
-    Jref_arr: np.ndarray,
-    uJref_arr: np.ndarray,
+    Jref: float,
+    u_Jref: float,
     names_sub: List[str],
     perturb_modes: Tuple[MCPerturbMode, ...],
     n_samples: int,
@@ -126,8 +126,8 @@ def mc_perturb_breakdown_table(
             sources,
             sr_ref,
             ref_spec,
-            Jref_per_source=Jref_arr,
-            u_Jref_per_source=uJref_arr,
+            Jref=Jref,
+            u_Jref=u_Jref,
             n_samples=n_samples,
             correlation=correlation,
             seed=seed,
@@ -196,25 +196,33 @@ def run_uncertainty_pipeline(
     sr_bot = load_spectral(os.path.join(data_dir, "subcell_SR_bot.csv"), label="bot")
     sr_ref = load_spectral(os.path.join(data_dir, "ref_cell_SR.csv"), label="ref")
     e_xenon = load_spectral(os.path.join(data_dir, "light_xenon.csv"), label="xenon")
-    e_halo1 = load_spectral(os.path.join(data_dir, "light_halogen1.csv"), label="halogen1")
-    e_halo2 = load_spectral(os.path.join(data_dir, "light_halogen2.csv"), label="halogen2")
+    e_halogen = load_spectral(os.path.join(data_dir, "light_halogen.csv"), label="halogen")
+    e_combined = load_spectral(os.path.join(data_dir, "light_combined.csv"), label="combined")
     ref_spec = load_reference_am0_for_data_dir(data_dir)
     ref_currents_df = pd.read_csv(os.path.join(data_dir, "ref_cell_currents.csv"))
 
     subcell_SRs = [sr_top, sr_mid, sr_bot]
-    sources = [e_xenon, e_halo1, e_halo2]
+    sources = [e_xenon, e_halogen]
     names_sub = ["top", "mid", "bot"]
-    names_src = ["xenon", "halogen1", "halogen2"]
+    names_src = ["xenon", "halogen"]
+
+    if len(ref_currents_df) != 1:
+        raise ValueError("ref_cell_currents.csv は combined 1 行 (両灯同時 J_ref) を想定します")
+    Jref = float(ref_currents_df["Jref_A"].iloc[0])
+    u_Jref = float(ref_currents_df["Jref_uncertainty_A"].iloc[0])
 
     st1 = PipelineStep(
         1,
         "入力データの読込",
         "-",
-        "SR, 光源, AM0, 基準セル光電流 CSV",
+        "SR, 光源テンプレート2本, 同時測定スペクトル, AM0, J_ref",
+        artifacts={},
         meta={
             "n_sr_points": {n: len(s.wavelength_nm) for n, s in zip(names_sub, subcell_SRs)},
             "ref_spectrum_integral_W_m2": ref_spec.integrate(),
-            "n_ref_current_sources": len(ref_currents_df),
+            "n_light_templates": len(sources),
+            "combined_spectrum_file": "light_combined.csv",
+            "Jref_combined_A": Jref,
         },
     )
     steps.append(st1)
@@ -225,13 +233,31 @@ def run_uncertainty_pipeline(
     df_A = pd.DataFrame({"A_i": A}, index=names_src)
     df_M = pd.DataFrame(M, index=names_sub, columns=names_src)
     df_b = pd.DataFrame({"b_j": b}, index=names_sub)
+
+    grid_fit = common_grid(sources + [e_combined], step_nm=1.0)
+    mix = np.zeros_like(grid_fit, dtype=float)
+    for i, coef in enumerate(A):
+        mix += coef * sources[i].interp_to(grid_fit).value
+    meas = e_combined.interp_to(grid_fit).value
+    df_fit = pd.DataFrame(
+        {
+            "wavelength_nm": grid_fit,
+            "irradiance_combined_measured": meas,
+            "irradiance_A1E1_plus_A2E2": mix,
+            "delta_measured_minus_fit": meas - mix,
+        }
+    )
+
     st2 = PipelineStep(
         2,
         "光源係数の決定",
         "Eq.(2)",
-        "M A = b を解き A_i を得る",
-        artifacts={"A": df_A, "M": df_M, "b": df_b},
-        meta={"max_abs_residual_MA_minus_b": res_eq2},
+        "M A ≈ b (テンプレート2本, 最小二乗可)",
+        artifacts={"A": df_A, "M": df_M, "b": df_b, "combined_fit_check": df_fit},
+        meta={
+            "max_abs_residual_MA_minus_b": res_eq2,
+            "solve_mode": "lstsq" if M.shape[1] < M.shape[0] else "solve",
+        },
     )
     steps.append(st2)
 
@@ -249,16 +275,13 @@ def run_uncertainty_pipeline(
     steps.append(st3)
 
     # ----- Step 4 -----
-    Jref_arr = ref_currents_df["Jref_A"].values.astype(float)
-    uJref_arr = ref_currents_df["Jref_uncertainty_A"].values.astype(float)
-
     mc_sys = monte_carlo_subcell_currents(
         subcell_SRs,
         sources,
         sr_ref,
         ref_spec,
-        Jref_per_source=Jref_arr,
-        u_Jref_per_source=uJref_arr,
+        Jref=Jref,
+        u_Jref=u_Jref,
         n_samples=n_mc_samples,
         correlation="systematic",
         seed=mc_seed,
@@ -269,8 +292,8 @@ def run_uncertainty_pipeline(
         sources,
         sr_ref,
         ref_spec,
-        Jref_per_source=Jref_arr,
-        u_Jref_per_source=uJref_arr,
+        Jref=Jref,
+        u_Jref=u_Jref,
         n_samples=n_mc_samples,
         correlation="independent",
         seed=mc_seed,
@@ -298,8 +321,8 @@ def run_uncertainty_pipeline(
         sources,
         sr_ref,
         ref_spec,
-        Jref_arr,
-        uJref_arr,
+        Jref,
+        u_Jref,
         names_sub,
         perturb_modes,
         n_mc_samples,
@@ -311,8 +334,8 @@ def run_uncertainty_pipeline(
         sources,
         sr_ref,
         ref_spec,
-        Jref_arr,
-        uJref_arr,
+        Jref,
+        u_Jref,
         names_sub,
         perturb_modes,
         n_mc_samples,
@@ -400,6 +423,7 @@ def run_uncertainty_pipeline(
         save_dataframe_csv(df_A, os.path.join(out_dir, "step02_A.csv"))
         save_dataframe_csv(df_M, os.path.join(out_dir, "step02_M.csv"))
         save_dataframe_csv(df_b, os.path.join(out_dir, "step02_b.csv"))
+        save_dataframe_csv(df_fit, os.path.join(out_dir, "step02b_combined_residual_check.csv"))
         save_dataframe_csv(uJ_table, os.path.join(out_dir, "step03_uJ_eq4_relative_pct.csv"))
         save_dataframe_csv(mc_main, os.path.join(out_dir, "mc_subcell_currents.csv"))
         save_dataframe_csv(mc_break_sys, os.path.join(out_dir, "step04_mc_perturb_breakdown_systematic.csv"))

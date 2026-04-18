@@ -42,8 +42,8 @@ def plot_fig01_reference_and_sources() -> None:
     """基準スペクトル AM0 と各光源の分光放射照度."""
     am0 = _read_csv("reference_spectrum_AM0.csv")
     xen = _read_csv("light_xenon.csv")
-    h1 = _read_csv("light_halogen1.csv")
-    h2 = _read_csv("light_halogen2.csv")
+    hal = _read_csv("light_halogen.csv")
+    comb = _read_csv("light_combined.csv")
 
     fig, axes = plt.subplots(2, 1, figsize=(9, 7), sharex=True)
     wl = am0.iloc[:, 0].values
@@ -57,14 +57,14 @@ def plot_fig01_reference_and_sources() -> None:
     axes[0].grid(True, alpha=0.3)
     axes[0].legend(loc="upper right")
 
-    axes[1].plot(xen.iloc[:, 0], xen.iloc[:, 1], label="xenon", lw=1.0)
-    axes[1].plot(h1.iloc[:, 0], h1.iloc[:, 1], label="halogen1", lw=1.0)
-    axes[1].plot(h2.iloc[:, 0], h2.iloc[:, 1], label="halogen2", lw=1.0)
+    axes[1].plot(xen.iloc[:, 0], xen.iloc[:, 1], label="xenon template", lw=1.0, ls="--")
+    axes[1].plot(hal.iloc[:, 0], hal.iloc[:, 1], label="halogen template", lw=1.0, ls="--")
+    axes[1].plot(comb.iloc[:, 0], comb.iloc[:, 1], label="combined measured", lw=1.2, color="k")
     axes[1].set_xlabel("波長 [nm]")
     axes[1].set_ylabel("放射照度 [a.u.]")
-    axes[1].set_title("各光源単独点灯 (light_*.csv)")
+    axes[1].set_title("光源: テンプレート2本 + 両灯同時測定 (light_*.csv)")
     axes[1].grid(True, alpha=0.3)
-    axes[1].legend(loc="upper right", ncol=3)
+    axes[1].legend(loc="upper right", fontsize=8)
     fig.tight_layout()
     fig.savefig(OUT / "fig01_reference_and_sources.png", dpi=150)
     plt.close(fig)
@@ -120,8 +120,8 @@ def plot_fig04_light_relative_uncertainty() -> None:
     fig, ax = plt.subplots(figsize=(9, 3.8))
     for name, lab in [
         ("light_xenon.csv", "xenon"),
-        ("light_halogen1.csv", "halogen1"),
-        ("light_halogen2.csv", "halogen2"),
+        ("light_halogen.csv", "halogen"),
+        ("light_combined.csv", "combined"),
     ]:
         df = _read_csv(name)
         wl = df.iloc[:, 0].values
@@ -131,9 +131,9 @@ def plot_fig04_light_relative_uncertainty() -> None:
         ax.plot(wl, rel, lw=1.0, label=lab)
     ax.set_xlabel("波長 [nm]")
     ax.set_ylabel("u(E) / |E| [%]")
-    ax.set_title("光源スペクトルの相対不確かさ (generate_sample_data では平坦 1.5%)")
+    ax.set_title("光源スペクトルの相対不確かさ (テンプレートは約 1.5% 平坦)")
     ax.grid(True, alpha=0.3)
-    ax.legend(loc="upper right", ncol=3)
+    ax.legend(loc="upper right", fontsize=8)
     fig.tight_layout()
     fig.savefig(OUT / "fig04_light_relative_uncertainty.png", dpi=150)
     plt.close(fig)

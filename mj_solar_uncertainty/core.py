@@ -85,11 +85,15 @@ def solve_eq2(
     light_sources: List[SpectralCurve],
     ref_spectrum: SpectralCurve,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Eq.(2) を解いて光源係数 A_i を返す.
+    """Eq.(2) を満たす光源係数 A_i を返す.
 
     M[j,i] = ∫ s_j(λ) e_i(λ) dλ
     b[j]   = ∫ s_j(λ) E_ref(λ) dλ
-    解: A = M^{-1} b
+
+    - 光源本数 n_source がサブセル数 n_subcell と等しいとき: A = M^{-1} b (厳密解).
+    - n_source < n_subcell のとき (例: 2 光源 × 3 接合): **最小二乗** A = argmin ||M A - b||_2.
+
+    e_i(λ) はランプ別測定が無い場合でも、カタログや過去データ由来の **テンプレート** として与える.
 
     戻り値
     -------
@@ -97,24 +101,29 @@ def solve_eq2(
     M : np.ndarray (n_subcell, n_source)
     b : np.ndarray (n_subcell,)
     """
-    n = len(subcell_SRs)
-    if len(light_sources) != n:
-        raise ValueError("サブセル数と光源数は一致が必要 (Eq.(2) 連立条件)")
+    n_j = len(subcell_SRs)
+    n_i = len(light_sources)
+    if n_i < 1 or n_i > n_j:
+        raise ValueError("光源本数は 1 以上 n_subcell 以下である必要があります")
 
-    # 全カーブを共通グリッドに投影
     grid = common_grid(subcell_SRs + light_sources + [ref_spectrum], step_nm=1.0)
     s_g = [s.interp_to(grid) for s in subcell_SRs]
     e_g = [e.interp_to(grid) for e in light_sources]
     Eref_g = ref_spectrum.interp_to(grid)
 
-    M = np.zeros((n, n))
-    b = np.zeros(n)
-    for j in range(n):
-        for i in range(n):
+    M = np.zeros((n_j, n_i))
+    b = np.zeros(n_j)
+    for j in range(n_j):
+        for i in range(n_i):
             M[j, i] = integral_J(s_g[j], e_g[i])
         b[j] = integral_J(s_g[j], Eref_g)
 
-    A = np.linalg.solve(M, b)
+    if n_i == n_j:
+        A = np.linalg.solve(M, b)
+    else:
+        A, _, rank, _ = np.linalg.lstsq(M, b, rcond=None)
+        if rank < n_i:
+            raise ValueError(f"M の列ランク不足 (rank={rank}, n_source={n_i})")
     return A, M, b
 
 
@@ -157,7 +166,11 @@ def u_Ai_analytical(
 
     u(A_i)² = Σ_{j,k} (∂A_i/∂M[j,k])² u(M[j,k])²
             + Σ_{j}   (∂A_i/∂b[j])²   u(b[j])²
+
+    注意: **正方 M (n×n) のみ**対応。光源数がサブセル数未満の最小二乗系では未使用.
     """
+    if M.shape[0] != M.shape[1]:
+        raise ValueError("u_Ai_analytical: 正方行列 M のみ対応")
     n = M.shape[0]
     A0 = np.linalg.solve(M, b)
     var = np.zeros(n)
@@ -203,8 +216,8 @@ def monte_carlo_subcell_currents(
     light_sources: List[SpectralCurve],
     ref_cell_SR: SpectralCurve,
     ref_spectrum: SpectralCurve,
-    Jref_per_source: np.ndarray,        # 各光源単独点灯時の基準セル光電流 [A]
-    u_Jref_per_source: np.ndarray,      # その不確かさ [A]
+    Jref: float,
+    u_Jref: float,
     n_samples: int = 5000,
     correlation: str = "systematic",     # "systematic" or "independent"
     seed: int = 0,
@@ -217,13 +230,19 @@ def monte_carlo_subcell_currents(
       "independent" — 波長点ごとに独立 (ランダム雑音を想定)
       実機では中間にあるため、両方を実行して上下限を把握するのが推奨.
 
+    Jref, u_Jref:
+      両灯同時点灯時の基準セル短絡電流 [A] とその 1σ [A] (ランプ別の J_ref は不要).
+
     perturb:
       摂動する入力カテゴリ (感度分解用). "all" が従来どおり.
       本実装では J_phot,j = ∫ s_j' E_ref dλ のみを統計しており、
       lights / ref_sr / Jref の摂動はこの量に現れない場合がある (ほぼ 0%%).
     """
     rng = np.random.default_rng(seed)
-    n = len(subcell_SRs)
+    n_j = len(subcell_SRs)
+    n_i = len(light_sources)
+    if n_i < 1 or n_i > n_j:
+        raise ValueError("光源本数は 1 以上 n_subcell 以下である必要があります")
     valid_perturb: Tuple[str, ...] = ("all", "subcell_sr", "lights", "ref_sr", "Jref")
     if perturb not in valid_perturb:
         raise ValueError(f"perturb は {valid_perturb} のいずれか")
@@ -281,15 +300,15 @@ def monte_carlo_subcell_currents(
             Sref_nom.uncertainty, Sref_nom.label,
         )
 
-    A_samples = np.zeros((n_samples, n))
-    Jphot_samples = np.zeros((n_samples, n))   # サブセルごとの光電流
+    A_samples = np.zeros((n_samples, n_i))
+    Jphot_samples = np.zeros((n_samples, n_j))
 
     for k in range(n_samples):
         # ノミナルから開始し、perturb に応じて部分だけ摂動
         s_pert = _copy_nominal(s_nom)
         e_pert = _copy_nominal(e_nom)
         Sref_pert = SpectralCurve(grid, np.array(Sref_nom.value), np.array(Sref_nom.uncertainty), Sref_nom.label)
-        Jref_pert = np.array(Jref_per_source, dtype=float, copy=True)
+        Jref_pert = float(Jref)
 
         use_s = perturb in ("all", "subcell_sr")
         use_e = perturb in ("all", "lights")
@@ -314,30 +333,28 @@ def monte_carlo_subcell_currents(
             raise ValueError("correlation は 'systematic' または 'independent'")
 
         if use_Jref:
-            Jref_pert = Jref_per_source + rng.standard_normal(n) * u_Jref_per_source
+            Jref_pert = float(Jref) + float(rng.standard_normal() * u_Jref)
 
         # Sref_pert / Jref_pert は Eq.(3) 連携拡張まで未使用 (API 対称のため生成).
 
-        # --- Eq.(2) を解く: M_pert A = b_pert ---
-        M_p = np.zeros((n, n))
-        b_p = np.zeros(n)
-        for j in range(n):
-            for i in range(n):
+        # --- Eq.(2): M_pert A ≈ b_pert ---
+        M_p = np.zeros((n_j, n_i))
+        b_p = np.zeros(n_j)
+        for j in range(n_j):
+            for i in range(n_i):
                 M_p[j, i] = integral_J(s_pert[j], e_pert[i])
             b_p[j] = integral_J(s_pert[j], Eref_g)
         try:
-            A_p = np.linalg.solve(M_p, b_p)
+            if n_i == n_j:
+                A_p = np.linalg.solve(M_p, b_p)
+            else:
+                A_p, _, rk, _ = np.linalg.lstsq(M_p, b_p, rcond=None)
+                if rk < n_i:
+                    continue
         except np.linalg.LinAlgError:
             continue
 
-        # --- Eq.(3) との整合性: A_p は基準セル光電流からも独立に決まるはずなので,
-        #     ここではモンテカルロ的に「両者を別経路で出して相対比例で扱う」.
-        #     簡略化のため Eq.(2) の A_p を用いて、サブセル光電流を計算:
-        #     J_phot,j = A_p · M_p[j, :] = b_p[j] (定義より一致)
-        # 実用上は基準セル経由 (Eq.3) の A_i を別途求めて相互チェック.
-        # ここではサブセル光電流を「シミュレータが目指す値」として基準スペクトル下値とする:
-        for j in range(n):
-            # サブセルが基準スペクトル下で発生する光電流 (摂動された SR 形状で)
+        for j in range(n_j):
             Jphot_samples[k, j] = integral_J(s_pert[j], Eref_g)
         A_samples[k] = A_p
 

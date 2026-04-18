@@ -34,12 +34,28 @@ class TestUncertaintyPipeline(unittest.TestCase):
         M = pd.read_csv(os.path.join(self._tmpdir, "step02_M.csv"), index_col=0)
         A = pd.read_csv(os.path.join(self._tmpdir, "step02_A.csv"), index_col=0)["A_i"].values
         b = pd.read_csv(os.path.join(self._tmpdir, "step02_b.csv"), index_col=0)["b_j"].values
-        r = M.values @ A - b
-        self.assertLess(np.max(np.abs(r)), 1e-9)
+        Mv, bv = M.values, b
+        n_j, n_i = Mv.shape
+        if n_i == n_j:
+            A_expect = np.linalg.solve(Mv, bv)
+            np.testing.assert_allclose(A, A_expect, rtol=1e-10, atol=1e-10)
+            r = Mv @ A - bv
+            self.assertLess(np.max(np.abs(r)), 1e-9)
+        else:
+            A_expect, *_ = np.linalg.lstsq(Mv, bv, rcond=None)
+            np.testing.assert_allclose(A, A_expect, rtol=1e-10, atol=1e-10)
+            self.assertEqual(M.shape[1], 2)
+            self.assertEqual(len(A), 2)
 
     def test_step_meta_residual_matches(self):
         st2 = next(s for s in self.result.steps if s.id == 2)
-        self.assertLess(st2.meta["max_abs_residual_MA_minus_b"], 1e-9)
+        M = pd.read_csv(os.path.join(self._tmpdir, "step02_M.csv"), index_col=0)
+        A = pd.read_csv(os.path.join(self._tmpdir, "step02_A.csv"), index_col=0)["A_i"].values
+        b = pd.read_csv(os.path.join(self._tmpdir, "step02_b.csv"), index_col=0)["b_j"].values
+        r_max = float(np.max(np.abs(M.values @ A - b)))
+        self.assertAlmostEqual(st2.meta["max_abs_residual_MA_minus_b"], r_max, places=10)
+        expect_mode = "solve" if M.shape[0] == M.shape[1] else "lstsq"
+        self.assertEqual(st2.meta["solve_mode"], expect_mode)
 
     def test_table1_rss_matches_components(self):
         t1 = self.result.table1
