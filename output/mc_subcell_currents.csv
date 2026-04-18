@@ -1,4 +1,4 @@
-subcell,Jphot_AM0_[a.u.],u_Jphot_systematic_[%],u_Jphot_independent_[%]
-top,213.1393,2.926,0.287
-mid,128.8769,5.116,0.535
-bot,218.3865,2.855,0.247
+﻿,subcell,Jphot_AM0_[a.u.],u_Jphot_systematic_[%],u_Jphot_independent_[%]
+0,top,213.1393,2.926,0.287
+1,mid,128.8769,5.116,0.535
+2,bot,218.3865,2.855,0.247

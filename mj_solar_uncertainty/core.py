@@ -13,7 +13,7 @@ Baur & Bett (Fraunhofer ISE, 2005, 31st IEEE PVSC) 手法に準拠
 from __future__ import annotations
 import numpy as np
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Literal, Tuple, Optional
 
 
 # =============================================================================
@@ -195,6 +195,9 @@ class MCResult:
     Jphot_subcell_rel: np.ndarray   # サブセル光電流の相対不確かさ [%]
 
 
+MCPerturbMode = Literal["all", "subcell_sr", "lights", "ref_sr", "Jref"]
+
+
 def monte_carlo_subcell_currents(
     subcell_SRs: List[SpectralCurve],
     light_sources: List[SpectralCurve],
@@ -205,6 +208,7 @@ def monte_carlo_subcell_currents(
     n_samples: int = 5000,
     correlation: str = "systematic",     # "systematic" or "independent"
     seed: int = 0,
+    perturb: MCPerturbMode = "all",
 ) -> MCResult:
     """サブセル光電流の不確かさをモンテカルロで求める.
 
@@ -212,43 +216,107 @@ def monte_carlo_subcell_currents(
       "systematic" — s_j(λ), e_i(λ) を波長間で完全相関 (校正系統不確かさを想定)
       "independent" — 波長点ごとに独立 (ランダム雑音を想定)
       実機では中間にあるため、両方を実行して上下限を把握するのが推奨.
+
+    perturb:
+      摂動する入力カテゴリ (感度分解用). "all" が従来どおり.
+      本実装では J_phot,j = ∫ s_j' E_ref dλ のみを統計しており、
+      lights / ref_sr / Jref の摂動はこの量に現れない場合がある (ほぼ 0%%).
     """
     rng = np.random.default_rng(seed)
     n = len(subcell_SRs)
+    valid_perturb: Tuple[str, ...] = ("all", "subcell_sr", "lights", "ref_sr", "Jref")
+    if perturb not in valid_perturb:
+        raise ValueError(f"perturb は {valid_perturb} のいずれか")
 
     grid = common_grid(subcell_SRs + light_sources + [ref_cell_SR, ref_spectrum], step_nm=1.0)
     s_nom = [s.interp_to(grid) for s in subcell_SRs]
     e_nom = [e.interp_to(grid) for e in light_sources]
     Sref_nom = ref_cell_SR.interp_to(grid)
     Eref_g = ref_spectrum.interp_to(grid)
+    ng = len(grid)
+
+    def _copy_nominal(curves: List[SpectralCurve]) -> List[SpectralCurve]:
+        return [
+            SpectralCurve(grid, np.array(c.value), np.array(c.uncertainty), c.label)
+            for c in curves
+        ]
+
+    def _noise_s_systematic() -> List[SpectralCurve]:
+        return [
+            SpectralCurve(grid, s.value + rng.standard_normal() * s.uncertainty,
+                          s.uncertainty, s.label)
+            for s in s_nom
+        ]
+
+    def _noise_s_independent() -> List[SpectralCurve]:
+        return [
+            SpectralCurve(grid, s.value + rng.standard_normal(ng) * s.uncertainty,
+                          s.uncertainty, s.label)
+            for s in s_nom
+        ]
+
+    def _noise_e_systematic() -> List[SpectralCurve]:
+        return [
+            SpectralCurve(grid, e.value + rng.standard_normal() * e.uncertainty,
+                          e.uncertainty, e.label)
+            for e in e_nom
+        ]
+
+    def _noise_e_independent() -> List[SpectralCurve]:
+        return [
+            SpectralCurve(grid, e.value + rng.standard_normal(ng) * e.uncertainty,
+                          e.uncertainty, e.label)
+            for e in e_nom
+        ]
+
+    def _noise_Sref_systematic() -> SpectralCurve:
+        return SpectralCurve(
+            grid, Sref_nom.value + rng.standard_normal() * Sref_nom.uncertainty,
+            Sref_nom.uncertainty, Sref_nom.label,
+        )
+
+    def _noise_Sref_independent() -> SpectralCurve:
+        return SpectralCurve(
+            grid, Sref_nom.value + rng.standard_normal(ng) * Sref_nom.uncertainty,
+            Sref_nom.uncertainty, Sref_nom.label,
+        )
 
     A_samples = np.zeros((n_samples, n))
     Jphot_samples = np.zeros((n_samples, n))   # サブセルごとの光電流
 
     for k in range(n_samples):
-        # --- 各カーブを摂動 ---
+        # ノミナルから開始し、perturb に応じて部分だけ摂動
+        s_pert = _copy_nominal(s_nom)
+        e_pert = _copy_nominal(e_nom)
+        Sref_pert = SpectralCurve(grid, np.array(Sref_nom.value), np.array(Sref_nom.uncertainty), Sref_nom.label)
+        Jref_pert = np.array(Jref_per_source, dtype=float, copy=True)
+
+        use_s = perturb in ("all", "subcell_sr")
+        use_e = perturb in ("all", "lights")
+        use_Sref = perturb in ("all", "ref_sr")
+        use_Jref = perturb in ("all", "Jref")
+
         if correlation == "systematic":
-            # 1 サンプルにつき 1 つの正規乱数で全波長を一括スケール
-            s_pert = [SpectralCurve(grid, s.value + rng.standard_normal() * s.uncertainty,
-                                    s.uncertainty, s.label) for s in s_nom]
-            e_pert = [SpectralCurve(grid, e.value + rng.standard_normal() * e.uncertainty,
-                                    e.uncertainty, e.label) for e in e_nom]
-            Sref_pert = SpectralCurve(grid, Sref_nom.value + rng.standard_normal() * Sref_nom.uncertainty,
-                                      Sref_nom.uncertainty, Sref_nom.label)
+            if use_s:
+                s_pert = _noise_s_systematic()
+            if use_e:
+                e_pert = _noise_e_systematic()
+            if use_Sref:
+                Sref_pert = _noise_Sref_systematic()
         elif correlation == "independent":
-            # 波長点ごとに独立 — 波長間の高速振動を許す
-            s_pert = [SpectralCurve(grid, s.value + rng.standard_normal(len(grid)) * s.uncertainty,
-                                    s.uncertainty, s.label) for s in s_nom]
-            e_pert = [SpectralCurve(grid, e.value + rng.standard_normal(len(grid)) * e.uncertainty,
-                                    e.uncertainty, e.label) for e in e_nom]
-            Sref_pert = SpectralCurve(grid,
-                                      Sref_nom.value + rng.standard_normal(len(grid)) * Sref_nom.uncertainty,
-                                      Sref_nom.uncertainty, Sref_nom.label)
+            if use_s:
+                s_pert = _noise_s_independent()
+            if use_e:
+                e_pert = _noise_e_independent()
+            if use_Sref:
+                Sref_pert = _noise_Sref_independent()
         else:
             raise ValueError("correlation は 'systematic' または 'independent'")
 
-        # --- 基準セル光電流 (Eq.3 入力) を摂動 ---
-        Jref_pert = Jref_per_source + rng.standard_normal(n) * u_Jref_per_source
+        if use_Jref:
+            Jref_pert = Jref_per_source + rng.standard_normal(n) * u_Jref_per_source
+
+        # Sref_pert / Jref_pert は Eq.(3) 連携拡張まで未使用 (API 対称のため生成).
 
         # --- Eq.(2) を解く: M_pert A = b_pert ---
         M_p = np.zeros((n, n))
@@ -336,6 +404,17 @@ class IVVariation:
 # =============================================================================
 # 7. サブセル合成 + 拡張不確かさ
 # =============================================================================
+def eq6_contribution_percent_matrix(
+    variations: Dict[str, IVVariation],
+    parameters: List[str],
+) -> "pd.DataFrame":
+    """Eq.(6) 由来の相対寄与 [%] をサブセル×パラメータの行列で返す (RSS 前の各成分)."""
+    import pandas as pd
+    subcells = list(variations.keys())
+    rows = {s: {p: round(float(variations[s].u_Y_relative(p)), 3) for p in parameters} for s in subcells}
+    return pd.DataFrame(rows).T
+
+
 def combine_subcells_RSS(
     variations: Dict[str, IVVariation],
     param: str,
