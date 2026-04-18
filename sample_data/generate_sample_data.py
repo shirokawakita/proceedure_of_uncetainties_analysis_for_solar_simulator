@@ -116,7 +116,7 @@ pd.DataFrame({
 
 
 # =============================================================================
-# 4. 光源スペクトル (キセノン + ハロゲン × 2)
+# 4. 光源スペクトル (キセノン + ハロゲン 各 1、テンプレート + 両灯同時測定 1 本)
 # =============================================================================
 def xenon_spectrum(wl):
     """キセノンランプ: 連続成分 + 800–1000 nm 領域のスパイク群."""
@@ -151,9 +151,21 @@ def save_lightsource(name, spec):
     }).to_csv(os.path.join(OUT_DIR, f"light_{name}.csv"), index=False)
 
 
-save_lightsource("xenon",   xenon_spectrum(WL))
-save_lightsource("halogen1", halogen_spectrum(WL, T=3000.0, peak_scale=0.8))  # 短波長強
-save_lightsource("halogen2", halogen_spectrum(WL, T=2700.0, peak_scale=1.2))  # 長波長強
+xe = xenon_spectrum(WL)
+ha = halogen_spectrum(WL, T=3000.0, peak_scale=0.9)
+save_lightsource("xenon", xe)
+save_lightsource("halogen", ha)
+# 両灯同時点灯で分光計が見るスペクトル (デモでは単純加算 + 合成不確かさ)
+comb = xe + ha
+rel_unc_comb = 0.015 * np.ones_like(WL)
+abs_unc_comb = comb * rel_unc_comb
+pd.DataFrame(
+    {
+        "wavelength_nm": WL,
+        "irradiance": comb,
+        "irradiance_uncertainty": abs_unc_comb,
+    }
+).to_csv(os.path.join(OUT_DIR, "light_combined.csv"), index=False)
 
 
 # =============================================================================
@@ -206,24 +218,23 @@ df_iv.to_csv(os.path.join(OUT_DIR, "spectrometric_IV.csv"), index=False)
 
 
 # =============================================================================
-# 6. 基準セル光電流 (各光源単独点灯時) — 簡易計算
+# 6. 基準セル光電流 (両灯同時点灯のみ) — 簡易計算
 # =============================================================================
-# Eq.(3): J_ref,i = A_i ∫ S_ref(λ) e_i(λ) dλ.
-# 校正用なので、ここでは「各光源 1.0 倍出力」としての値を出力 (実測代替).
+# 実機ではキセノン+ハロゲン同時点灯時の短絡電流を 1 値で記録する運用を想定.
 def _intgr(s_arr, e_arr, wl):
     return float(np.trapezoid(s_arr * e_arr, wl))
 
 
-sources = {
-    "xenon":    xenon_spectrum(WL),
-    "halogen1": halogen_spectrum(WL, T=3000.0, peak_scale=0.8),
-    "halogen2": halogen_spectrum(WL, T=2700.0, peak_scale=1.2),
-}
-Jref_rows = []
-for name, e in sources.items():
-    Jref = _intgr(sr_ref, e, WL)
-    Jref_rows.append({"source": name, "Jref_A": Jref, "Jref_uncertainty_A": 0.005 * Jref})
-pd.DataFrame(Jref_rows).to_csv(os.path.join(OUT_DIR, "ref_cell_currents.csv"), index=False)
+Jref_comb = _intgr(sr_ref, comb, WL)
+pd.DataFrame(
+    [
+        {
+            "source": "combined",
+            "Jref_A": Jref_comb,
+            "Jref_uncertainty_A": 0.005 * Jref_comb,
+        }
+    ]
+).to_csv(os.path.join(OUT_DIR, "ref_cell_currents.csv"), index=False)
 
 
 print("サンプルデータ生成完了:")

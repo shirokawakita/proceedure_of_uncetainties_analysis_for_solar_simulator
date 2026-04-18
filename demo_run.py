@@ -10,7 +10,7 @@ sample_data/ 配下の CSV を読み込み、Baur & Bett (2005) 手法で
 出力 (output/):
     table1_eq6.csv, table1_eq6.md  - 論文 Table 1 形式の最終結果
     mc_subcell_currents.csv         - モンテカルロ結果 (サブセル光電流不確かさ)
-    step02_*.csv, step03_*.csv      - Eq.(2)(4) の中間表
+    step02_*.csv, step02b_*.csv, step03_*.csv - Eq.(2)(4) の中間表（2b は合成スペクトル検証）
     step04_mc_perturb_breakdown_*.csv - MC 感度分解 (参考)
     step07_*.csv                    - Eq.(6) 寄与と追加要因の二乗
     pipeline_summary.md             - Step と成果物の対応
